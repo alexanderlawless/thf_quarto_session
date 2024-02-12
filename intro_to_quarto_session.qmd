@@ -1,0 +1,228 @@
+---
+title: "Intro to Quarto session"
+author: "Alexander Lawless"
+editor: visual
+format:
+  html:
+    code-fold: true
+    toc: true
+---
+
+```{r}
+#| label: setup
+#| warning: false
+#| echo: false
+
+library(tidyverse)
+library(janitor)
+
+# Read in data ----
+independent_sites_raw <- 
+  read_csv("NJR_data/IND_StatsOnline.csv",
+           skip = 1) %>% 
+  clean_names()
+ 
+nhs_sites_raw <- 
+  read_csv("NJR_data/NHS_StatsOnline.csv",
+           skip = 1) %>% 
+  clean_names()
+ 
+# Wrangle/clean data ----
+independent_sites_long <-
+  independent_sites_raw %>% 
+  pivot_longer(cols = -c(
+    "provider_type",           
+    "year",            
+    "month_number",                           
+    "month", 
+    "region_code",
+    "region_name",
+    "company_code",  
+    "company_name",
+    "hospital"
+  )) %>% 
+  mutate(month_number = case_when(month_number < 10 ~ paste0(0, month_number),
+                                  TRUE ~ as.character(month_number))) %>% 
+  mutate(date = as.Date(paste0(year, "-", month_number, "-01")))
+ 
+nhs_sites_long <-
+  nhs_sites_raw %>% 
+  pivot_longer(cols = -c(
+    "provider_type",           
+    "year",            
+    "month_number",                           
+    "month", 
+    "region_code",
+    "region_name",
+    "trust_code",
+    "trust_name",
+    "hospital"
+  )) %>% 
+  mutate(month_number = case_when(month_number < 10 ~ paste0(0, month_number),
+                                  TRUE ~ as.character(month_number))) %>% 
+  mutate(date = as.Date(paste0(year, "-", month_number, "-01")))
+
+
+```
+
+## National Joint Registry Data - example
+
+### Data source
+
+Source: [NJR StatsOnline - hospital procedure volumes](https://surgeonprofile.njrcentre.org.uk/Home/StatsIndex)
+
+### Data visualisations
+
+::: panel-tabset
+#### All procedures
+
+```{r}
+#| warning: false
+
+# NJR data by sector
+independent_sites_long %>% 
+  filter(year != 2024) |> 
+  group_by(date, name) %>% 
+  summarise(Private = sum(value)) %>% 
+  filter(name == "completed_procedures_by_operation_date") %>% 
+  left_join(
+    nhs_sites_long %>% 
+      group_by(date, name) %>% 
+      summarise(NHS = sum(value)) %>% 
+      filter(name == "completed_procedures_by_operation_date"),
+    by = c("date", "name")
+    ) %>% 
+  pivot_longer(cols = c(Private, NHS), names_to = "sector") %>% 
+  filter(date != "2023-12-01") %>% 
+  
+  ggplot(aes(date, value, colour = sector)) +
+  geom_line(linewidth = 1.1) +
+  geom_smooth(method = "loess") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_color_brewer(palette = "Paired") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank()) +
+  labs(y = "Completed procedures",
+       colour = "Sector:",
+       title = "Completed procedures by provider sector",
+       subtitle = "National Joint Registry data | Apr 03 - Nov 23",
+       caption = "Note: Procedures include hip, knee, ankle, elbow and shoulder procedures")
+```
+
+#### Procedure groups
+
+```{r}
+#| warning: false
+
+independent_sites_long %>% 
+  filter(year != 2024) |> 
+  group_by(date, name) %>% 
+  summarise(Private = sum(value)) %>% 
+  filter(!str_detect(name, paste(c("submission_date", 
+                                   "consent_rate", 
+                                   "completed_procedures"),
+                                 collapse = '|'))) %>% 
+  left_join(
+    nhs_sites_long %>% 
+      group_by(date, name) %>% 
+      summarise(NHS = sum(value)) %>% 
+      filter(!str_detect(name, paste(c("submission_date", 
+                                       "consent_rate", 
+                                       "completed_procedures"),
+                                     collapse = '|'))),
+    by = c("date", "name")
+    ) %>% 
+  pivot_longer(cols = c(Private, NHS), names_to = "sector") %>% 
+  mutate(name = str_to_title(str_remove_all(name, "_procedures_by_operation_date"))) %>% 
+  filter(date != "2023-12-01") %>% 
+  
+  ggplot(aes(date, value, colour = sector)) +
+  geom_line(linewidth = 0.5) +
+  geom_smooth(method = "loess") +
+  facet_wrap(~name, scale = "free_y") +
+  scale_y_continuous(labels = scales::comma, oob = scales::squish) +
+  scale_color_brewer(palette = "Paired") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        strip.background = element_rect(fill = NA, colour = "grey"),
+        legend.position = c(0.8, 0.2)
+        ) +
+  labs(y = "Completed procedures",
+       colour = "Sector:",
+       title = "Completed procedures by provider sector and procedure group",
+       subtitle = "National Joint Registry data | Apr 03 - Nov 23",
+       caption = "Note: Data collection periods differ by procedure group")
+```
+:::
+
+### Text narrative
+
+NHS provision of joint procedures was plateauing before the onset of the pandemic and has not returned to pre-pandemic levels in recent years. Before the pandemic, the NHS delivered around double the amount of joint procedures than the private sector; the gap between the two sectors was reducing in the years immediately prior to the pandemic (2015-29). In the post-pandemic era, the NHS and private sector have delivered similar volumes of orthopedic joint procedures.
+
+The private sector now deliverers the majority of hip and knee procedures - the two highest volume orthopaedic joint procedure groups. Ankle and shoulder procedures volumes are significantly lower in the private sector however trends suggest the gap between private and NHS sectors are reducing. Elbow procedures are not commonly undertaken in the private sector.
+
+
+### Map example 
+
+Independent sector healthcare companies by region: 
+
+```{r}
+#| warning: false
+
+library(sf)
+library(leaflet)
+
+independent_companies_region <-
+  independent_sites_raw |> 
+  group_by(region_name) |> 
+  summarise(n_company = n_distinct(company_code))
+
+# Read in shape file
+region_shp <- 
+  read_sf("https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/NHS_England_Regions_July_2022_EN_BUC_2022/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson") |> 
+  clean_names()
+
+map_data <-
+  region_shp |> 
+  select(nhser22nm, geometry) |> 
+  left_join(
+    independent_companies_region |> 
+      mutate(region_name = 
+               case_when(
+                 region_name == "North East & Yorkshire" ~ "North East and Yorkshire",
+                 TRUE ~ region_name
+               )), 
+    by = c("nhser22nm" = "region_name")
+  ) |> 
+  mutate(label = paste0(nhser22nm, ": ", n_company, " independent sector healthcare companies"))
+
+
+#
+pal <- colorBin("YlOrRd", domain = map_data$n_company)
+
+leaflet(map_data) %>% 
+  addTiles() %>% 
+  addPolygons(
+    fillColor = ~pal(n_company),
+    weight = 2,
+    opacity = 1,
+    color = "grey",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE
+      ),
+    label = map_data$label,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto")
+    )
+
+```
+
+
